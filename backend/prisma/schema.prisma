@@ -1,0 +1,211 @@
+// Trust Me - core schema (Phase 1 foundation). Extended per phase.
+// Rules: money = Decimal(14,2); ledger is append-only; every tenant-owned row
+// carries tenantId and is filtered by it in the NestJS data layer.
+
+generator client { provider = "prisma-client-js" }
+datasource db { provider = "postgresql"; url = env("DATABASE_URL") }
+
+enum UserRole { BUSINESS_OWNER MONEY_LENDER CUSTOMER ADMIN }
+enum VerificationStatus { PENDING VERIFIED REJECTED }
+enum AgreementStatus { DRAFT PENDING_SIGNATURE ACTIVE AMENDMENT_PENDING COMPLETED CANCELLED }
+enum LedgerEntryType { CREDIT_GIVEN PAYMENT_RECEIVED ADJUSTMENT INTEREST_CHARGED REVERSAL }
+enum ScheduleStatus { UPCOMING PAID OVERDUE PARTIAL }
+enum DisputeStatus { OPEN UNDER_REVIEW RESOLVED REJECTED }
+
+model User {
+  id           String             @id @default(uuid())
+  fullName     String
+  phone        String             @unique
+  email        String?            @unique
+  passwordHash String
+  role         UserRole
+  nicNumber    String?            @unique
+  nicStatus    VerificationStatus @default(PENDING)
+  isVerified   Boolean            @default(false)
+  locale       String             @default("en")
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+
+  refreshTokens RefreshToken[]
+  otpCodes      OtpCode[]
+  memberships   TenantMember[]
+  customer      Customer?
+  deviceTokens  DeviceToken[]
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid())
+  userId    String
+  tokenHash String    @unique   // store hash only
+  familyId  String              // rotation family: reuse => revoke family
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@index([userId, familyId])
+}
+
+model OtpCode {
+  id         String    @id @default(uuid())
+  userId     String
+  purpose    String    // LOGIN | REGISTER | AGREEMENT_SIGN | AMENDMENT
+  codeHash   String
+  attempts   Int       @default(0)
+  expiresAt  DateTime
+  consumedAt DateTime?
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@index([userId, purpose])
+}
+
+model DeviceToken {
+  id     String @id @default(uuid())
+  userId String
+  token  String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// A Tenant is a business or an individual money lender's workspace.
+model Tenant {
+  id        String   @id @default(uuid())
+  name      String
+  type      String   // BUSINESS | LENDER
+  createdAt DateTime @default(now())
+
+  members       TenantMember[]
+  customers     Customer[]
+  creditAccounts CreditAccount[]
+  loans         Loan[]
+  agreements    Agreement[]
+  subscription  Subscription?
+}
+
+model TenantMember {
+  id       String @id @default(uuid())
+  tenantId String
+  userId   String
+  role     String // OWNER | EMPLOYEE
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+  user     User   @relation(fields: [userId], references: [id])
+  @@unique([tenantId, userId])
+}
+
+model Customer {
+  id        String  @id @default(uuid())
+  tenantId  String
+  userId    String? @unique   // set when the customer joins the app
+  fullName  String
+  phone     String
+  nicNumber String?
+  tenant    Tenant  @relation(fields: [tenantId], references: [id])
+  user      User?   @relation(fields: [userId], references: [id])
+  creditAccounts CreditAccount[]
+  loans     Loan[]
+  @@unique([tenantId, phone])
+}
+
+model CreditAccount {
+  id         String   @id @default(uuid())
+  tenantId   String
+  customerId String
+  creditLimit Decimal @db.Decimal(14, 2)
+  createdAt  DateTime @default(now())
+  tenant     Tenant   @relation(fields: [tenantId], references: [id])
+  customer   Customer @relation(fields: [customerId], references: [id])
+  ledger     LedgerEntry[]
+}
+
+model Loan {
+  id           String   @id @default(uuid())
+  tenantId     String
+  customerId   String
+  principal    Decimal  @db.Decimal(14, 2)
+  interestRate Decimal  @db.Decimal(6, 3)
+  termMonths   Int
+  createdAt    DateTime @default(now())
+  tenant       Tenant   @relation(fields: [tenantId], references: [id])
+  customer     Customer @relation(fields: [customerId], references: [id])
+  schedule     PaymentSchedule[]
+  ledger       LedgerEntry[]
+  agreement    Agreement?
+}
+
+// APPEND-ONLY. Corrections are new REVERSAL/ADJUSTMENT rows, never updates.
+model LedgerEntry {
+  id              String          @id @default(uuid())
+  tenantId        String
+  creditAccountId String?
+  loanId          String?
+  type            LedgerEntryType
+  amount          Decimal         @db.Decimal(14, 2)
+  reference       String?
+  idempotencyKey  String          @unique   // offline sync retries are safe
+  createdById     String
+  createdAt       DateTime        @default(now())
+  creditAccount   CreditAccount?  @relation(fields: [creditAccountId], references: [id])
+  loan            Loan?           @relation(fields: [loanId], references: [id])
+  @@index([tenantId, createdAt])
+}
+
+model PaymentSchedule {
+  id      String         @id @default(uuid())
+  loanId  String
+  dueDate DateTime
+  amountDue Decimal      @db.Decimal(14, 2)
+  amountPaid Decimal     @default(0) @db.Decimal(14, 2)
+  status  ScheduleStatus @default(UPCOMING)
+  loan    Loan           @relation(fields: [loanId], references: [id])
+  @@index([dueDate, status])
+}
+
+model Agreement {
+  id       String          @id @default(uuid())
+  tenantId String
+  loanId   String?         @unique
+  status   AgreementStatus @default(DRAFT)
+  tenant   Tenant          @relation(fields: [tenantId], references: [id])
+  loan     Loan?           @relation(fields: [loanId], references: [id])
+  versions AgreementVersion[]
+  disputes Dispute[]
+}
+
+model AgreementVersion {
+  id          String   @id @default(uuid())
+  agreementId String
+  version     Int
+  contentHash String   // SHA-256 of the exact signed document
+  pdfUrl      String
+  createdAt   DateTime @default(now())
+  agreement   Agreement @relation(fields: [agreementId], references: [id])
+  signatures  Signature[]
+  @@unique([agreementId, version])
+}
+
+model Signature {
+  id          String   @id @default(uuid())
+  versionId   String
+  signerId    String
+  imageUrl    String
+  otpVerified Boolean
+  ipAddress   String?
+  signedAt    DateTime @default(now())
+  version     AgreementVersion @relation(fields: [versionId], references: [id])
+}
+
+model Dispute {
+  id          String        @id @default(uuid())
+  agreementId String
+  raisedById  String
+  reason      String
+  status      DisputeStatus @default(OPEN)
+  createdAt   DateTime      @default(now())
+  agreement   Agreement     @relation(fields: [agreementId], references: [id])
+}
+
+model Subscription {
+  id       String   @id @default(uuid())
+  tenantId String   @unique
+  plan     String
+  status   String
+  renewsAt DateTime?
+  tenant   Tenant   @relation(fields: [tenantId], references: [id])
+}
