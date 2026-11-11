@@ -36,7 +36,8 @@ class AppTheme {
     required PaymentStatusColors statusColors,
   }) {
     const radius = 14.0;
-    final shape = RoundedRectangleBorder(borderRadius: BorderRadius.circular(radius));
+    final shape =
+        RoundedRectangleBorder(borderRadius: BorderRadius.circular(radius));
 
     return ThemeData(
       useMaterial3: true,
@@ -50,7 +51,7 @@ class AppTheme {
         centerTitle: false,
         foregroundColor: scheme.onSurface,
       ),
-      cardTheme: CardTheme(
+      cardTheme: CardThemeData(
         elevation: 0,
         color: scheme.surface,
         margin: EdgeInsets.zero,
@@ -91,7 +92,8 @@ class AppTheme {
           borderSide: BorderSide(color: scheme.primary, width: 2),
         ),
       ),
-      snackBarTheme: const SnackBarThemeData(behavior: SnackBarBehavior.floating),
+      snackBarTheme:
+          const SnackBarThemeData(behavior: SnackBarBehavior.floating),
     );
   }
 }

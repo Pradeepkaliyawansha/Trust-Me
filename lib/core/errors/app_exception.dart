@@ -36,6 +36,7 @@ class AppException implements Exception {
       case DioExceptionType.connectionTimeout:
       case DioExceptionType.sendTimeout:
       case DioExceptionType.receiveTimeout:
+      case DioExceptionType.transformTimeout:
         return const AppException(type: AppExceptionType.timeout);
       case DioExceptionType.connectionError:
         return const AppException(type: AppExceptionType.network);
